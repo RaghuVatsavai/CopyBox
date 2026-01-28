@@ -10,15 +10,24 @@
     "frontendDist": "../dist"
   },
   "app": {
+    "macOSPrivateApi": true,
     "windows": [
       {
-        "title": "copybox",
-        "width": 800,
-        "height": 600
+        "title": "CopyBox",
+        "width": 720,
+        "height": 420,
+        "resizable": false,
+        "decorations": false,
+        "transparent": true,
+        "visible": false
       }
     ],
     "security": {
-      "csp": null
+      "csp": null,
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["$APPDATA/**"]
+      }
     }
   },
   "bundle": {

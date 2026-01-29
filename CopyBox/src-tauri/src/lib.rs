@@ -135,6 +135,7 @@ fn select_item(app: AppHandle, state: State<'_, AppState>, id: String) -> Result
     }
 
     emit_history(&app, &payload);
+    hide_overlay(&app);
     Ok(payload)
 }
 

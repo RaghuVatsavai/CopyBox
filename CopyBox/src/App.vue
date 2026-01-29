@@ -160,9 +160,17 @@ async function closeOverlay() {
 }
 
 async function selectItem(item: ClipboardItem) {
-  const payload = await invoke<StoredState>("select_item", { id: item.id });
-  applyState(payload);
-  await closeOverlay();
+  const currentTheme = settings.theme;
+  try {
+    const payload = await invoke<StoredState>("select_item", { id: item.id });
+    applyState(payload);
+    if (settings.theme !== currentTheme) {
+      settings.theme = currentTheme;
+      void updateSettings();
+    }
+  } finally {
+    await closeOverlay();
+  }
 }
 
 async function updateSettings() {
@@ -235,6 +243,18 @@ function highlightItem(index: number) {
   selectedIndex.value = index;
 }
 
+function clearSearch() {
+  if (!search.value) {
+    return;
+  }
+  search.value = "";
+  pageIndex.value = 0;
+  selectedIndex.value = 0;
+  void nextTick(() => {
+    searchInput.value?.focus();
+  });
+}
+
 function handleKeydown(event: KeyboardEvent) {
   if (!isOpen.value) {
     return;
@@ -304,7 +324,7 @@ function handleKeydown(event: KeyboardEvent) {
     return;
   }
 
-  if (event.key === "Enter") {
+  if (event.key === "Enter" || event.key === "NumpadEnter") {
     event.preventDefault();
     activeKeys.enter = true;
     selectActiveItem();
@@ -356,7 +376,7 @@ function handleKeyup(event: KeyboardEvent) {
     activeKeys.right = false;
   }
 
-  if (event.key === "Enter") {
+  if (event.key === "Enter" || event.key === "NumpadEnter") {
     activeKeys.enter = false;
   }
 }
@@ -602,7 +622,37 @@ onUnmounted(() => {
             v-model="search"
             type="text"
             placeholder="Search clipboard history"
+            @keydown.enter.stop.prevent="selectActiveItem"
           />
+          <button
+            v-if="search.length > 0"
+            class="search-clear"
+            type="button"
+            aria-label="Clear search"
+            @mousedown.prevent
+            @click="clearSearch"
+          >
+            <svg viewBox="0 0 12 12" aria-hidden="true">
+              <line
+                x1="3"
+                y1="3"
+                x2="9"
+                y2="9"
+                stroke="currentColor"
+                stroke-width="1.6"
+                stroke-linecap="round"
+              />
+              <line
+                x1="9"
+                y1="3"
+                x2="3"
+                y2="9"
+                stroke="currentColor"
+                stroke-width="1.6"
+                stroke-linecap="round"
+              />
+            </svg>
+          </button>
         </div>
         <button
           ref="settingsButton"
@@ -677,6 +727,7 @@ onUnmounted(() => {
         :class="{ active: index === selectedIndex }"
         ref="historyItemRefs"
         @click="highlightItem(index)"
+        @keydown.enter.stop.prevent="selectItem(item)"
       >
         <div class="history-index">
           <span class="mini-keycap">{{ index + 1 }}</span>
@@ -851,7 +902,7 @@ onUnmounted(() => {
 
 .search input {
   width: 100%;
-  padding: 12px 16px 12px 42px;
+  padding: 12px 42px 12px 42px;
   border-radius: 16px;
   border: 1px solid var(--app-border);
   outline: none;
@@ -863,6 +914,35 @@ onUnmounted(() => {
 
 .search input::placeholder {
   color: var(--app-muted);
+}
+
+.search-clear {
+  position: absolute;
+  right: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--app-muted);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  padding: 0;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.search-clear:hover {
+  background: var(--app-surface-strong);
+  color: var(--app-text);
+}
+
+.search-clear svg {
+  width: 12px;
+  height: 12px;
+  display: block;
 }
 
 .icon-button {

@@ -15,7 +15,7 @@
       {
         "title": "CopyBox",
         "width": 720,
-        "height": 460,
+        "height": 480,
         "resizable": false,
         "decorations": false,
         "transparent": true,

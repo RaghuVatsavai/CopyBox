@@ -700,15 +700,6 @@ onUnmounted(() => {
       </button>
     </section>
 
-    <div v-if="totalPages > 1" class="page-indicator" aria-label="History pages">
-      <span
-        v-for="page in totalPages"
-        :key="page"
-        class="page-dot"
-        :class="{ active: page - 1 === pageIndex }"
-      />
-    </div>
-
     <footer class="footer">
       <div class="shortcut-block">
         <div class="keycaps">
@@ -724,6 +715,14 @@ onUnmounted(() => {
             {{ numberKeyLabel }}
           </span>
         </div>
+      </div>
+      <div v-if="totalPages > 1" class="page-indicator" aria-label="History pages">
+        <span
+          v-for="page in totalPages"
+          :key="page"
+          class="page-dot"
+          :class="{ active: page - 1 === pageIndex }"
+        />
       </div>
       <div class="shortcut-block">
         <div class="keycaps">
@@ -770,7 +769,7 @@ onUnmounted(() => {
   --toggle-bg: rgba(176, 153, 118, 0.35);
   --toggle-active: rgba(222, 170, 92, 0.9);
   --toggle-thumb: #fdf7ed;
-  --history-item-height: 54px;
+  --history-item-height: 60px;
   --history-gap: 6px;
   position: relative;
   z-index: 1;
@@ -1040,8 +1039,10 @@ onUnmounted(() => {
 .page-indicator {
   display: flex;
   justify-content: center;
+  align-items: center;
   gap: 6px;
   padding: 4px 0;
+  flex: 1;
 }
 
 .page-dot {

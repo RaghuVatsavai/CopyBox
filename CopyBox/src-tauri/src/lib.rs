@@ -34,11 +34,12 @@ struct AppState {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", default)]
 struct HistorySettings {
     max_items: usize,
     auto_paste: bool,
     capture_paused: bool,
+    theme: String,
 }
 
 impl Default for HistorySettings {
@@ -47,6 +48,7 @@ impl Default for HistorySettings {
             max_items: DEFAULT_HISTORY_LIMIT,
             auto_paste: false,
             capture_paused: false,
+            theme: "light".to_string(),
         }
     }
 }
@@ -142,12 +144,14 @@ fn update_settings(
     state: State<'_, AppState>,
     max_items: usize,
     auto_paste: bool,
+    theme: String,
 ) -> Result<StoredState, String> {
     let payload = {
         let mut history = state.history.lock().map_err(|_| "history lock poisoned")?;
         let max_items = max_items.clamp(1, MAX_HISTORY_LIMIT);
         history.data.settings.max_items = max_items;
         history.data.settings.auto_paste = auto_paste;
+        history.data.settings.theme = normalize_theme(&theme);
         history.data.items.truncate(max_items);
         persist_state(&app, &history.data);
         history.data.clone()
@@ -592,6 +596,14 @@ fn mark_capture_error(data: &mut StoredState, error: String) -> bool {
     true
 }
 
+fn normalize_theme(value: &str) -> String {
+    if value.eq_ignore_ascii_case("dark") {
+        "dark".to_string()
+    } else {
+        "light".to_string()
+    }
+}
+
 fn load_state(app: &AppHandle) -> StoredState {
     let path = history_path(app);
     let Some(path) = path else {
@@ -604,6 +616,7 @@ fn load_state(app: &AppHandle) -> StoredState {
 
     let mut stored: StoredState = serde_json::from_slice(&data).unwrap_or_default();
     stored.settings.max_items = stored.settings.max_items.clamp(1, MAX_HISTORY_LIMIT);
+    stored.settings.theme = normalize_theme(&stored.settings.theme);
     stored.items.truncate(stored.settings.max_items);
     stored
 }

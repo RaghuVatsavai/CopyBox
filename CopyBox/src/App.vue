@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -22,6 +22,7 @@ type HistorySettings = {
   maxItems: number;
   autoPaste: boolean;
   capturePaused: boolean;
+  theme: "light" | "dark";
 };
 
 type CaptureStatus = {
@@ -41,20 +42,41 @@ const search = ref("");
 const isOpen = ref(false);
 const isMac = ref(false);
 const searchInput = ref<HTMLInputElement | null>(null);
-const activeKeys = reactive({ meta: false, shift: false, v: false, number: "" });
+const settingsButton = ref<HTMLButtonElement | null>(null);
+const settingsPanel = ref<HTMLDivElement | null>(null);
+const historyItemRefs = ref<HTMLElement[]>([]);
+const activeKeys = reactive({
+  meta: false,
+  shift: false,
+  v: false,
+  number: "",
+  up: false,
+  down: false,
+  left: false,
+  right: false,
+  enter: false,
+});
 const settings = reactive<HistorySettings>({
   maxItems: 50,
   autoPaste: false,
   capturePaused: false,
+  theme: "light",
 });
 const status = reactive<CaptureStatus>({
   lastCaptureAt: undefined,
   lastError: undefined,
 });
+const isSettingsOpen = ref(false);
+const selectedIndex = ref(0);
+const pageIndex = ref(0);
 let isClosing = false;
 
-const numberKeyLabel = computed(() => activeKeys.number || "1-9");
+const maxVisibleItems = 5;
+const pageSize = computed(() => Math.min(settings.maxItems, maxVisibleItems));
+const numberKeyLabel = computed(() => activeKeys.number || `1-${pageSize.value}`);
 const primaryModifier = computed(() => (isMac.value ? "⌘" : "Ctrl"));
+const themeClass = computed(() => (settings.theme === "dark" ? "theme-dark" : "theme-light"));
+const isDarkMode = computed(() => settings.theme === "dark");
 const unlistenHistory = ref<(() => void) | null>(null);
 const unlistenOpen = ref<(() => void) | null>(null);
 const unlistenClose = ref<(() => void) | null>(null);
@@ -71,10 +93,12 @@ const filteredItems = computed(() => {
   });
 });
 
-const visibleItems = computed(() => filteredItems.value.slice(0, settings.maxItems));
-
-const friendlyShortcut = computed(() =>
-  isMac.value ? "Command + Shift + V" : "Ctrl + Shift + V"
+const totalPages = computed(() =>
+  Math.max(1, Math.ceil(filteredItems.value.length / pageSize.value))
+);
+const pageStart = computed(() => pageIndex.value * pageSize.value);
+const visibleItems = computed(() =>
+  filteredItems.value.slice(pageStart.value, pageStart.value + pageSize.value)
 );
 
 const statusMessage = computed(() => {
@@ -84,10 +108,7 @@ const statusMessage = computed(() => {
   if (status.lastError) {
     return status.lastError;
   }
-  if (status.lastCaptureAt) {
-    return `Last capture ${formatTimeAgo(status.lastCaptureAt)}`;
-  }
-  return "Waiting for first copy";
+  return "";
 });
 
 function applyState(payload: StoredState) {
@@ -113,6 +134,9 @@ async function openOverlay() {
   await appWindow.center();
   await appWindow.setFocus();
   await refreshHistory();
+  isSettingsOpen.value = false;
+  selectedIndex.value = 0;
+  pageIndex.value = 0;
   await nextTick();
   searchInput.value?.focus();
 }
@@ -124,6 +148,9 @@ async function closeOverlay() {
   isClosing = true;
   isOpen.value = false;
   search.value = "";
+  isSettingsOpen.value = false;
+  selectedIndex.value = 0;
+  pageIndex.value = 0;
   try {
     await appWindow.setAlwaysOnTop(false);
     await appWindow.hide();
@@ -142,6 +169,7 @@ async function updateSettings() {
   const payload = await invoke<StoredState>("update_settings", {
     max_items: settings.maxItems,
     auto_paste: settings.autoPaste,
+    theme: settings.theme,
   });
   applyState(payload);
 }
@@ -156,6 +184,57 @@ async function clearHistory() {
   applyState(payload);
 }
 
+function toggleSettings() {
+  isSettingsOpen.value = !isSettingsOpen.value;
+}
+
+function handleDocumentClick(event: MouseEvent) {
+  if (!isSettingsOpen.value) {
+    return;
+  }
+  const target = event.target as Node;
+  if (settingsPanel.value?.contains(target) || settingsButton.value?.contains(target)) {
+    return;
+  }
+  isSettingsOpen.value = false;
+}
+
+function toggleTheme(event: Event) {
+  const target = event.target as HTMLInputElement;
+  settings.theme = target.checked ? "dark" : "light";
+  void updateSettings();
+}
+
+function moveSelection(delta: number) {
+  if (visibleItems.value.length === 0) {
+    selectedIndex.value = 0;
+    return;
+  }
+  selectedIndex.value = Math.min(
+    Math.max(selectedIndex.value + delta, 0),
+    visibleItems.value.length - 1
+  );
+}
+
+function changePage(delta: number) {
+  const nextPage = Math.min(Math.max(pageIndex.value + delta, 0), totalPages.value - 1);
+  if (nextPage !== pageIndex.value) {
+    pageIndex.value = nextPage;
+    selectedIndex.value = 0;
+  }
+}
+
+function selectActiveItem() {
+  const item = visibleItems.value[selectedIndex.value];
+  if (item) {
+    void selectItem(item);
+  }
+}
+
+function highlightItem(index: number) {
+  selectedIndex.value = index;
+}
+
 function handleKeydown(event: KeyboardEvent) {
   if (!isOpen.value) {
     return;
@@ -163,6 +242,18 @@ function handleKeydown(event: KeyboardEvent) {
 
   if (event.key === "Escape") {
     event.preventDefault();
+    if (isSettingsOpen.value) {
+      isSettingsOpen.value = false;
+      return;
+    }
+    const isSearchFocused = document.activeElement === searchInput.value;
+    if (isSearchFocused || search.value.trim().length > 0) {
+      search.value = "";
+      pageIndex.value = 0;
+      selectedIndex.value = 0;
+      searchInput.value?.blur();
+      return;
+    }
     void closeOverlay();
     return;
   }
@@ -185,16 +276,53 @@ function handleKeydown(event: KeyboardEvent) {
     activeKeys.v = true;
   }
 
+  if (event.key === "ArrowDown") {
+    event.preventDefault();
+    activeKeys.down = true;
+    moveSelection(1);
+    return;
+  }
+
+  if (event.key === "ArrowUp") {
+    event.preventDefault();
+    activeKeys.up = true;
+    moveSelection(-1);
+    return;
+  }
+
+  if (event.key === "ArrowRight") {
+    event.preventDefault();
+    activeKeys.right = true;
+    changePage(1);
+    return;
+  }
+
+  if (event.key === "ArrowLeft") {
+    event.preventDefault();
+    activeKeys.left = true;
+    changePage(-1);
+    return;
+  }
+
+  if (event.key === "Enter") {
+    event.preventDefault();
+    activeKeys.enter = true;
+    selectActiveItem();
+    return;
+  }
+
   if (/^[1-9]$/.test(event.key) && search.value.trim().length === 0) {
     const index = Number(event.key) - 1;
-    const item = visibleItems.value[index];
-    if (item) {
+    if (index >= pageSize.value) {
+      return;
+    }
+    if (visibleItems.value[index]) {
       activeKeys.number = event.key;
       setTimeout(() => {
         activeKeys.number = "";
       }, 140);
       event.preventDefault();
-      void selectItem(item);
+      highlightItem(index);
     }
   }
 }
@@ -211,7 +339,59 @@ function handleKeyup(event: KeyboardEvent) {
   if (event.key.toLowerCase() === "v") {
     activeKeys.v = false;
   }
+
+  if (event.key === "ArrowUp") {
+    activeKeys.up = false;
+  }
+
+  if (event.key === "ArrowDown") {
+    activeKeys.down = false;
+  }
+
+  if (event.key === "ArrowLeft") {
+    activeKeys.left = false;
+  }
+
+  if (event.key === "ArrowRight") {
+    activeKeys.right = false;
+  }
+
+  if (event.key === "Enter") {
+    activeKeys.enter = false;
+  }
 }
+
+watch(search, () => {
+  pageIndex.value = 0;
+  if (visibleItems.value.length > 0) {
+    selectedIndex.value = 0;
+  }
+});
+
+watch(totalPages, (value) => {
+  if (pageIndex.value > value - 1) {
+    pageIndex.value = Math.max(0, value - 1);
+  }
+});
+
+watch(visibleItems, (nextItems) => {
+  if (nextItems.length === 0) {
+    selectedIndex.value = 0;
+    return;
+  }
+  if (selectedIndex.value >= nextItems.length) {
+    selectedIndex.value = nextItems.length - 1;
+  }
+});
+
+watch(selectedIndex, (value) => {
+  if (value < 0) {
+    return;
+  }
+  void nextTick(() => {
+    historyItemRefs.value[value]?.scrollIntoView({ block: "nearest" });
+  });
+});
 
 function formatTimeAgo(timestamp: number) {
   const diffMs = Date.now() - timestamp;
@@ -270,17 +450,17 @@ function itemTitle(item: ClipboardItem) {
 
   if (item.kind === "files") {
     if (!item.paths || item.paths.length === 0) {
-      return "Files";
+      return "Untitled";
     }
     if (item.paths.length === 1) {
       return fileName(item.paths[0]);
     }
-    return `${item.paths.length} files`;
+    return `${fileName(item.paths[0])} +${item.paths.length - 1}`;
   }
 
   if (item.kind === "image") {
     const dimensions = item.width && item.height ? `${item.width}×${item.height}` : "";
-    return `Image ${dimensions}`.trim();
+    return dimensions || "Image";
   }
 
   return "Clipboard";
@@ -288,25 +468,28 @@ function itemTitle(item: ClipboardItem) {
 
 function itemSubtitle(item: ClipboardItem) {
   if (item.kind === "text") {
-    return "Text";
+    return "";
   }
 
   if (item.kind === "link") {
-    return "Link";
+    return "";
   }
 
   if (item.kind === "files") {
     if (!item.paths || item.paths.length === 0) {
-      return "File list";
+      return "";
     }
-    return item.paths.slice(0, 2).map(fileName).join(" · ");
+    if (item.paths.length === 1) {
+      return "";
+    }
+    return item.paths.slice(1, 3).map(fileName).join(" · ");
   }
 
   if (item.kind === "image") {
-    return "Image";
+    return "";
   }
 
-  return "Clipboard";
+  return "";
 }
 
 function itemBadge(item: ClipboardItem) {
@@ -374,6 +557,7 @@ onMounted(async () => {
 
   window.addEventListener("keydown", handleKeydown);
   window.addEventListener("keyup", handleKeyup);
+  window.addEventListener("mousedown", handleDocumentClick);
 
   if (import.meta.env.DEV) {
     await openOverlay();
@@ -385,6 +569,7 @@ onMounted(async () => {
 onUnmounted(() => {
   window.removeEventListener("keydown", handleKeydown);
   window.removeEventListener("keyup", handleKeyup);
+  window.removeEventListener("mousedown", handleDocumentClick);
   unlistenHistory.value?.();
   unlistenOpen.value?.();
   unlistenClose.value?.();
@@ -393,32 +578,91 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="backdrop" v-if="isOpen" @click="closeOverlay" />
-  <div class="app" :class="{ 'is-open': isOpen }">
+  <div class="backdrop" v-if="isOpen" :class="themeClass" @click="closeOverlay" />
+  <div class="app" :class="[themeClass, { 'is-open': isOpen }]">
     <header class="header">
-      <div class="search">
-        <input
-          ref="searchInput"
-          v-model="search"
-          type="text"
-          placeholder="Search clipboard history"
-        />
-      </div>
-      <div class="shortcut">
-        <div class="keycaps">
-          <span class="keycap" :class="{ pressed: activeKeys.meta }">
-            {{ primaryModifier }}
+      <div class="header-row">
+        <div class="search">
+          <span class="search-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2" fill="none" />
+              <line
+                x1="16.65"
+                y1="16.65"
+                x2="21"
+                y2="21"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+              />
+            </svg>
           </span>
-          <span class="keycap" :class="{ pressed: activeKeys.shift }">Shift</span>
-          <span class="keycap" :class="{ pressed: activeKeys.v }">V</span>
-          <span class="keycap keycap--wide" :class="{ pressed: activeKeys.number }">
-            {{ numberKeyLabel }}
-          </span>
+          <input
+            ref="searchInput"
+            v-model="search"
+            type="text"
+            placeholder="Search clipboard history"
+          />
         </div>
-        <p class="shortcut-copy">{{ friendlyShortcut }} then 1-9</p>
+        <button
+          ref="settingsButton"
+          class="icon-button settings-button"
+          type="button"
+          @click="toggleSettings"
+          aria-label="Open settings"
+          :aria-expanded="isSettingsOpen"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="1.8" />
+            <path
+              d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.6"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+          </svg>
+        </button>
+      </div>
+      <div v-if="isSettingsOpen" ref="settingsPanel" class="settings-popover">
+        <div class="settings-title">Settings</div>
+        <div class="settings-group">
+          <div class="setting">
+            <span>Auto paste</span>
+            <label class="toggle">
+              <input type="checkbox" v-model="settings.autoPaste" @change="updateSettings" />
+              <span class="toggle-slider" />
+            </label>
+          </div>
+          <div class="setting">
+            <span>Max history</span>
+            <input
+              type="number"
+              min="1"
+              max="99"
+              v-model.number="settings.maxItems"
+              @change="updateSettings"
+            />
+          </div>
+          <div class="setting">
+            <span>Dark mode</span>
+            <label class="toggle">
+              <input type="checkbox" :checked="isDarkMode" @change="toggleTheme" />
+              <span class="toggle-slider" />
+            </label>
+          </div>
+        </div>
+        <div class="settings-actions">
+          <button class="ghost" type="button" @click="toggleCapture">
+            {{ settings.capturePaused ? "Resume capture" : "Pause capture" }}
+          </button>
+        </div>
       </div>
     </header>
-    <p class="status" :class="{ error: status.lastError }">{{ statusMessage }}</p>
+    <p v-if="statusMessage" class="status" :class="{ error: status.lastError }">
+      {{ statusMessage }}
+    </p>
 
     <section class="history">
       <div v-if="visibleItems.length === 0" class="empty">
@@ -430,14 +674,18 @@ onUnmounted(() => {
         :key="item.id"
         type="button"
         class="history-item"
-        @click="selectItem(item)"
+        :class="{ active: index === selectedIndex }"
+        ref="historyItemRefs"
+        @click="highlightItem(index)"
       >
         <div class="history-index">
           <span class="mini-keycap">{{ index + 1 }}</span>
         </div>
         <div class="history-content">
           <div class="history-title">{{ itemTitle(item) }}</div>
-          <div class="history-subtitle">{{ itemSubtitle(item) }}</div>
+          <div v-if="itemSubtitle(item)" class="history-subtitle">
+            {{ itemSubtitle(item) }}
+          </div>
           <div class="history-badge">{{ itemBadge(item) }}</div>
         </div>
         <div class="history-meta">
@@ -452,30 +700,39 @@ onUnmounted(() => {
       </button>
     </section>
 
+    <div v-if="totalPages > 1" class="page-indicator" aria-label="History pages">
+      <span
+        v-for="page in totalPages"
+        :key="page"
+        class="page-dot"
+        :class="{ active: page - 1 === pageIndex }"
+      />
+    </div>
+
     <footer class="footer">
-      <div class="settings-block">
-        <div class="setting">
-          <span>Auto paste</span>
-          <label class="toggle">
-            <input type="checkbox" v-model="settings.autoPaste" @change="updateSettings" />
-            <span class="toggle-slider" />
-          </label>
-        </div>
-        <div class="setting">
-          <span>Max history</span>
-          <input
-            type="number"
-            min="1"
-            max="99"
-            v-model.number="settings.maxItems"
-            @change="updateSettings"
-          />
+      <div class="shortcut-block">
+        <div class="keycaps">
+          <span class="keycap" :class="{ pressed: activeKeys.meta }">
+            {{ primaryModifier }}
+          </span>
+          <span class="keycap-plus">+</span>
+          <span class="keycap" :class="{ pressed: activeKeys.shift }">Shift</span>
+          <span class="keycap-plus">+</span>
+          <span class="keycap" :class="{ pressed: activeKeys.v }">V</span>
+          <span class="keycap-plus">+</span>
+          <span class="keycap keycap--wide" :class="{ pressed: activeKeys.number }">
+            {{ numberKeyLabel }}
+          </span>
         </div>
       </div>
-      <div class="settings-block">
-        <button class="ghost" type="button" @click="toggleCapture">
-          {{ settings.capturePaused ? "Resume capture" : "Pause capture" }}
-        </button>
+      <div class="shortcut-block">
+        <div class="keycaps">
+          <span class="keycap" :class="{ pressed: activeKeys.left }">←</span>
+          <span class="keycap" :class="{ pressed: activeKeys.up }">↑</span>
+          <span class="keycap" :class="{ pressed: activeKeys.down }">↓</span>
+          <span class="keycap" :class="{ pressed: activeKeys.right }">→</span>
+          <span class="keycap keycap--wide" :class="{ pressed: activeKeys.enter }">Enter</span>
+        </div>
       </div>
     </footer>
   </div>
@@ -485,185 +742,343 @@ onUnmounted(() => {
 .backdrop {
   position: fixed;
   inset: 0;
+  transition: background 0.2s ease;
+}
+
+.backdrop.theme-light {
+  background: rgba(88, 78, 58, 0.18);
+}
+
+.backdrop.theme-dark {
   background: rgba(8, 8, 12, 0.5);
 }
 
 .app {
+  --app-bg: rgba(248, 244, 236, 0.96);
+  --app-surface: rgba(255, 255, 255, 0.65);
+  --app-surface-strong: rgba(255, 255, 255, 0.9);
+  --app-border: rgba(155, 139, 114, 0.28);
+  --app-text: #2f2a21;
+  --app-muted: rgba(47, 42, 33, 0.6);
+  --app-muted-strong: rgba(47, 42, 33, 0.75);
+  --app-shadow: 0 30px 80px rgba(80, 64, 40, 0.2);
+  --accent: #d6a45b;
+  --keycap-bg: linear-gradient(180deg, #fff6ea, #e6d3bc);
+  --keycap-border: rgba(139, 113, 82, 0.5);
+  --keycap-shadow: #c7b196;
+  --keycap-text: #3d3024;
+  --toggle-bg: rgba(176, 153, 118, 0.35);
+  --toggle-active: rgba(222, 170, 92, 0.9);
+  --toggle-thumb: #fdf7ed;
+  --history-item-height: 54px;
+  --history-gap: 6px;
   position: relative;
   z-index: 1;
-  min-height: 100vh;
+  height: 100vh;
   display: flex;
   flex-direction: column;
-  gap: 20px;
-  padding: 28px;
-  background: rgba(20, 20, 24, 0.88);
-  color: #f6f4ef;
-  border-radius: 24px;
-  box-shadow: 0 30px 90px rgba(0, 0, 0, 0.55);
+  gap: 14px;
+  padding: 18px;
+  box-sizing: border-box;
+  overflow: hidden;
+  background: var(--app-bg);
+  color: var(--app-text);
+  border-radius: 26px;
+  border: 1px solid var(--app-border);
+  box-shadow: var(--app-shadow);
   backdrop-filter: blur(28px);
 }
 
+.app.theme-dark {
+  --app-bg: rgba(20, 20, 24, 0.9);
+  --app-surface: rgba(255, 255, 255, 0.08);
+  --app-surface-strong: rgba(255, 255, 255, 0.14);
+  --app-border: rgba(255, 255, 255, 0.12);
+  --app-text: #f6f4ef;
+  --app-muted: rgba(255, 255, 255, 0.55);
+  --app-muted-strong: rgba(255, 255, 255, 0.7);
+  --app-shadow: 0 30px 90px rgba(0, 0, 0, 0.55);
+  --accent: #f4c56b;
+  --keycap-bg: linear-gradient(160deg, #f7f3eb, #d7cebf);
+  --keycap-border: rgba(193, 183, 167, 0.9);
+  --keycap-shadow: #b1a795;
+  --keycap-text: #3c372f;
+  --toggle-bg: rgba(255, 255, 255, 0.2);
+  --toggle-active: rgba(249, 187, 96, 0.75);
+  --toggle-thumb: #f7f3eb;
+}
+
 .header {
-  display: flex;
-  justify-content: space-between;
+  position: relative;
+  z-index: 2;
+}
+
+.header-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 40px;
   align-items: center;
-  gap: 20px;
+  gap: 12px;
 }
 
 .status {
-  margin: 10px 0 0;
-  font-size: 12px;
-  color: rgba(255, 255, 255, 0.55);
+  margin: 4px 0 0;
+  font-size: 11px;
+  color: var(--app-muted);
 }
 
 .status.error {
-  color: #f4b1a6;
-}
-
-.shortcut {
-  text-align: right;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.keycaps {
-  display: flex;
-  justify-content: flex-end;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.keycap {
-  padding: 8px 14px;
-  min-width: 38px;
-  text-align: center;
-  font-weight: 600;
-  color: #3c372f;
-  border-radius: 10px;
-  background: linear-gradient(160deg, #f7f3eb, #d7cebf);
-  border: 1px solid #c1b7a7;
-  box-shadow: 0 6px 0 #b1a795, 0 14px 18px rgba(0, 0, 0, 0.35);
-  transition: transform 80ms ease, box-shadow 80ms ease;
-}
-
-.keycap--wide {
-  min-width: 60px;
-}
-
-.keycap.pressed {
-  transform: translateY(4px);
-  box-shadow: 0 2px 0 #b1a795, 0 6px 12px rgba(0, 0, 0, 0.35);
-}
-
-.shortcut-copy {
-  font-size: 12px;
-  color: rgba(255, 255, 255, 0.6);
-  margin: 0;
+  color: #c26a5f;
 }
 
 .search {
-  flex: 1;
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.search-icon {
+  position: absolute;
+  left: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--app-muted);
+}
+
+.search-icon svg {
+  width: 18px;
+  height: 18px;
+  display: block;
 }
 
 .search input {
   width: 100%;
-  padding: 12px 16px;
-  border-radius: 14px;
-  border: none;
+  padding: 12px 16px 12px 42px;
+  border-radius: 16px;
+  border: 1px solid var(--app-border);
   outline: none;
   font-size: 14px;
-  color: #f4f0e8;
-  background: rgba(255, 255, 255, 0.08);
+  color: var(--app-text);
+  background: var(--app-surface);
+  box-sizing: border-box;
 }
 
 .search input::placeholder {
-  color: rgba(255, 255, 255, 0.45);
+  color: var(--app-muted);
+}
+
+.icon-button {
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  border: 1px solid var(--app-border);
+  background: var(--app-surface-strong);
+  color: var(--app-muted-strong);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: transform 120ms ease, box-shadow 120ms ease, background 120ms ease;
+}
+
+.icon-button:hover {
+  transform: scale(1.02);
+  box-shadow: 0 6px 14px rgba(0, 0, 0, 0.12);
+}
+
+.icon-button svg {
+  width: 18px;
+  height: 18px;
+}
+
+.settings-popover {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 10px);
+  width: 250px;
+  background: var(--app-surface-strong);
+  border: 1px solid var(--app-border);
+  border-radius: 14px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  box-shadow: 0 22px 50px rgba(0, 0, 0, 0.18);
+  backdrop-filter: blur(20px);
+}
+
+.settings-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  color: var(--app-muted);
+}
+
+.settings-group {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.settings-actions {
+  display: flex;
+  justify-content: flex-end;
 }
 
 .history {
   flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  overflow: auto;
-  padding-right: 4px;
+  display: grid;
+  grid-template-rows: repeat(5, var(--history-item-height));
+  gap: var(--history-gap);
+  overflow: hidden;
+  align-content: start;
 }
 
 .history-item {
   display: grid;
-  grid-template-columns: auto 1fr auto;
-  gap: 16px;
+  grid-template-columns: 30px 1fr auto;
+  gap: 10px;
   align-items: center;
-  padding: 14px 16px;
-  border-radius: 16px;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  height: var(--history-item-height);
+  padding: 6px 10px;
+  border-radius: 12px;
+  background: var(--app-surface);
+  border: 1px solid var(--app-border);
   color: inherit;
   cursor: pointer;
-  transition: transform 120ms ease, background 120ms ease;
+  transition: transform 120ms ease, background 120ms ease, border-color 120ms ease;
   text-align: left;
 }
 
 .history-item:hover {
   transform: translateY(-1px);
-  background: rgba(255, 255, 255, 0.12);
+  background: var(--app-surface-strong);
+}
+
+.history-item.active {
+  border-color: var(--accent);
+  background: var(--app-surface-strong);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.15);
+  animation: selectionPulse 160ms ease;
+}
+
+@keyframes selectionPulse {
+  0% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.01);
+  }
+  100% {
+    transform: scale(1);
+  }
 }
 
 .history-index {
   display: flex;
   align-items: center;
+  justify-content: center;
+  height: 100%;
 }
 
 .mini-keycap {
-  padding: 6px 10px;
-  border-radius: 8px;
-  background: linear-gradient(160deg, #f7f3eb, #d7cebf);
-  color: #3c372f;
-  font-weight: 600;
-  box-shadow: 0 4px 0 #b1a795, 0 8px 12px rgba(0, 0, 0, 0.35);
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  background: linear-gradient(180deg, rgba(255, 249, 240, 0.98), rgba(221, 201, 176, 0.96));
+  color: var(--keycap-text);
+  font-size: 12px;
+  font-weight: 700;
+  border: 1px solid rgba(121, 99, 73, 0.6);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.85),
+    inset 0 -2px 0 rgba(0, 0, 0, 0.1),
+    0 2px 0 var(--keycap-shadow),
+    0 4px 8px rgba(0, 0, 0, 0.16);
 }
 
 .history-content {
   display: grid;
   gap: 4px;
+  min-width: 0;
+  align-content: center;
 }
 
 .history-title {
-  font-size: 15px;
+  font-size: 13px;
   font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .history-subtitle {
-  font-size: 12px;
-  color: rgba(255, 255, 255, 0.6);
+  font-size: 11px;
+  color: var(--app-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .history-badge {
-  font-size: 11px;
-  letter-spacing: 0.2em;
+  display: inline-flex;
+  align-items: center;
+  justify-self: start;
+  width: fit-content;
+  padding: 2px 6px;
+  border-radius: 999px;
+  font-size: 9px;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.45);
+  color: var(--app-muted-strong);
+  background: var(--app-surface-strong);
+  border: 1px solid var(--app-border);
+}
+
+.page-indicator {
+  display: flex;
+  justify-content: center;
+  gap: 6px;
+  padding: 4px 0;
+}
+
+.page-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(47, 42, 33, 0.25);
+  transition: transform 120ms ease, background 120ms ease;
+}
+
+.theme-dark .page-dot {
+  background: rgba(255, 255, 255, 0.3);
+}
+
+.page-dot.active {
+  background: var(--accent);
+  transform: scale(1.2);
 }
 
 .history-meta {
   display: flex;
   flex-direction: column;
   align-items: flex-end;
-  gap: 8px;
+  gap: 4px;
 }
 
 .history-time {
-  font-size: 11px;
-  color: rgba(255, 255, 255, 0.45);
+  font-size: 10px;
+  color: var(--app-muted);
 }
 
 .history-thumb {
-  width: 44px;
-  height: 32px;
+  width: 38px;
+  height: 26px;
   object-fit: cover;
-  border-radius: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 6px;
+  border: 1px solid var(--app-border);
 }
 
 .empty {
@@ -671,8 +1086,10 @@ onUnmounted(() => {
   flex-direction: column;
   gap: 8px;
   text-align: center;
-  color: rgba(255, 255, 255, 0.6);
-  padding: 30px 0;
+  color: var(--app-muted);
+  align-items: center;
+  justify-content: center;
+  grid-row: 1 / -1;
 }
 
 .footer {
@@ -681,29 +1098,77 @@ onUnmounted(() => {
   align-items: center;
   gap: 16px;
   flex-wrap: wrap;
+  padding-top: 8px;
+  border-top: 1px solid var(--app-border);
 }
 
-.settings-block {
+.shortcut-block {
   display: flex;
-  gap: 16px;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.keycaps {
+  display: flex;
+  justify-content: flex-start;
   align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.keycap {
+  padding: 5px 8px;
+  min-width: 28px;
+  text-align: center;
+  font-weight: 600;
+  font-size: 10px;
+  color: var(--keycap-text);
+  border-radius: 7px;
+  background: linear-gradient(180deg, rgba(255, 249, 240, 0.95), rgba(227, 210, 186, 0.95));
+  border: 1px solid rgba(139, 113, 82, 0.45);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.75),
+    inset 0 -2px 0 rgba(0, 0, 0, 0.08),
+    0 3px 0 var(--keycap-shadow),
+    0 6px 10px rgba(0, 0, 0, 0.18);
+  transition: transform 80ms ease, box-shadow 80ms ease;
+}
+
+.keycap--wide {
+  min-width: 48px;
+}
+
+.keycap.pressed {
+  transform: translateY(2px);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.7),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.08),
+    0 1px 0 var(--keycap-shadow),
+    0 4px 8px rgba(0, 0, 0, 0.18);
+}
+
+.keycap-plus {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--app-muted-strong);
 }
 
 .setting {
   display: flex;
   align-items: center;
-  gap: 10px;
+  justify-content: space-between;
+  gap: 12px;
   font-size: 12px;
-  color: rgba(255, 255, 255, 0.7);
+  color: var(--app-muted-strong);
 }
 
 .setting input[type="number"] {
   width: 72px;
   border-radius: 10px;
-  border: none;
+  border: 1px solid var(--app-border);
   padding: 6px 8px;
-  background: rgba(255, 255, 255, 0.08);
-  color: #f4f0e8;
+  background: var(--app-surface);
+  color: var(--app-text);
 }
 
 .toggle {
@@ -721,7 +1186,7 @@ onUnmounted(() => {
 .toggle-slider {
   width: 42px;
   height: 24px;
-  background: rgba(255, 255, 255, 0.2);
+  background: var(--toggle-bg);
   border-radius: 999px;
   position: relative;
   transition: background 0.2s ease;
@@ -735,12 +1200,12 @@ onUnmounted(() => {
   width: 18px;
   height: 18px;
   border-radius: 50%;
-  background: #f7f3eb;
+  background: var(--toggle-thumb);
   transition: transform 0.2s ease;
 }
 
 .toggle input:checked + .toggle-slider {
-  background: rgba(249, 187, 96, 0.75);
+  background: var(--toggle-active);
 }
 
 .toggle input:checked + .toggle-slider::after {
@@ -748,18 +1213,18 @@ onUnmounted(() => {
 }
 
 .ghost {
-  border: 1px solid rgba(255, 255, 255, 0.2);
+  border: 1px solid var(--app-border);
   background: transparent;
-  color: rgba(255, 255, 255, 0.8);
+  color: var(--app-text);
   padding: 8px 14px;
   border-radius: 12px;
   font-size: 12px;
   cursor: pointer;
-  transition: background 0.2s ease;
+  transition: background 0.2s ease, border 0.2s ease;
 }
 
 .ghost:hover {
-  background: rgba(255, 255, 255, 0.1);
+  background: var(--app-surface);
 }
 </style>
 
@@ -767,7 +1232,7 @@ onUnmounted(() => {
 :root {
   font-family: "Inter", "SF Pro Text", "SF Pro Display", system-ui, sans-serif;
   font-size: 15px;
-  color: #f6f4ef;
+  color: #2f2a21;
   background-color: transparent;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
@@ -778,10 +1243,13 @@ onUnmounted(() => {
 body {
   margin: 0;
   background: transparent;
+  height: 100vh;
+  overflow: hidden;
 }
 
 #app {
-  min-height: 100vh;
-  padding: 18px;
+  height: 100vh;
+  padding: 0;
+  overflow: hidden;
 }
 </style>

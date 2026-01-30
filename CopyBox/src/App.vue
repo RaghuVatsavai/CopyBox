@@ -18,11 +18,26 @@ type ClipboardItem = {
   height?: number;
 };
 
+type ThemeName =
+  | "system"
+  | "light"
+  | "dark"
+  | "tokyonight"
+  | "everforest"
+  | "ayu"
+  | "catppuccin"
+  | "catppuccin-macchiato"
+  | "gruvbox"
+  | "kanagawa"
+  | "nord"
+  | "matrix"
+  | "one-dark";
+
 type HistorySettings = {
   maxItems: number;
   autoPaste: boolean;
   capturePaused: boolean;
-  theme: "light" | "dark";
+  theme: ThemeName;
 };
 
 type CaptureStatus = {
@@ -49,12 +64,12 @@ const activeKeys = reactive({
   meta: false,
   shift: false,
   v: false,
-  number: "",
   up: false,
   down: false,
   left: false,
   right: false,
   enter: false,
+  backspace: false,
 });
 const settings = reactive<HistorySettings>({
   maxItems: 50,
@@ -69,14 +84,36 @@ const status = reactive<CaptureStatus>({
 const isSettingsOpen = ref(false);
 const selectedIndex = ref(0);
 const pageIndex = ref(0);
+const systemPrefersDark = ref(false);
+let prefersDarkQuery: MediaQueryList | null = null;
 let isClosing = false;
+
+const themeOptions: Array<{ label: string; value: ThemeName }> = [
+  { label: "System", value: "system" },
+  { label: "Light", value: "light" },
+  { label: "Dark", value: "dark" },
+  { label: "Tokyonight", value: "tokyonight" },
+  { label: "Everforest", value: "everforest" },
+  { label: "Ayu", value: "ayu" },
+  { label: "Catppuccin", value: "catppuccin" },
+  { label: "Catppuccin Macchiato", value: "catppuccin-macchiato" },
+  { label: "Gruvbox", value: "gruvbox" },
+  { label: "Kanagawa", value: "kanagawa" },
+  { label: "Nord", value: "nord" },
+  { label: "Matrix", value: "matrix" },
+  { label: "One Dark", value: "one-dark" },
+];
 
 const maxVisibleItems = 5;
 const pageSize = computed(() => Math.min(settings.maxItems, maxVisibleItems));
-const numberKeyLabel = computed(() => activeKeys.number || `1-${pageSize.value}`);
 const primaryModifier = computed(() => (isMac.value ? "⌘" : "Ctrl"));
-const themeClass = computed(() => (settings.theme === "dark" ? "theme-dark" : "theme-light"));
-const isDarkMode = computed(() => settings.theme === "dark");
+const resolvedTheme = computed(() => {
+  if (settings.theme === "system") {
+    return systemPrefersDark.value ? "dark" : "light";
+  }
+  return settings.theme;
+});
+const themeClass = computed(() => `theme-${resolvedTheme.value}`);
 const unlistenHistory = ref<(() => void) | null>(null);
 const unlistenOpen = ref<(() => void) | null>(null);
 const unlistenClose = ref<(() => void) | null>(null);
@@ -111,10 +148,16 @@ const statusMessage = computed(() => {
   return "";
 });
 
+const isApplyingState = ref(false);
+
 function applyState(payload: StoredState) {
+  isApplyingState.value = true;
   items.value = payload.items;
   Object.assign(settings, payload.settings);
   Object.assign(status, payload.status ?? {});
+  Promise.resolve().then(() => {
+    isApplyingState.value = false;
+  });
 }
 
 async function refreshHistory() {
@@ -188,8 +231,13 @@ async function toggleCapture() {
 }
 
 async function clearHistory() {
+  const currentTheme = settings.theme;
   const payload = await invoke<StoredState>("clear_history");
   applyState(payload);
+  if (settings.theme !== currentTheme) {
+    settings.theme = currentTheme;
+    void updateSettings();
+  }
 }
 
 function toggleSettings() {
@@ -205,12 +253,6 @@ function handleDocumentClick(event: MouseEvent) {
     return;
   }
   isSettingsOpen.value = false;
-}
-
-function toggleTheme(event: Event) {
-  const target = event.target as HTMLInputElement;
-  settings.theme = target.checked ? "dark" : "light";
-  void updateSettings();
 }
 
 function moveSelection(delta: number) {
@@ -284,12 +326,23 @@ function handleKeydown(event: KeyboardEvent) {
     return;
   }
 
+  if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key === "Backspace") {
+    event.preventDefault();
+    activeKeys.backspace = true;
+    void clearHistory();
+    return;
+  }
+
   if (event.key === "Meta" || event.key === "Control") {
     activeKeys.meta = true;
   }
 
   if (event.key === "Shift") {
     activeKeys.shift = true;
+  }
+
+  if (event.key === "Backspace") {
+    activeKeys.backspace = true;
   }
 
   if (event.key.toLowerCase() === "v") {
@@ -337,10 +390,6 @@ function handleKeydown(event: KeyboardEvent) {
       return;
     }
     if (visibleItems.value[index]) {
-      activeKeys.number = event.key;
-      setTimeout(() => {
-        activeKeys.number = "";
-      }, 140);
       event.preventDefault();
       highlightItem(index);
     }
@@ -379,6 +428,10 @@ function handleKeyup(event: KeyboardEvent) {
   if (event.key === "Enter" || event.key === "NumpadEnter") {
     activeKeys.enter = false;
   }
+
+  if (event.key === "Backspace") {
+    activeKeys.backspace = false;
+  }
 }
 
 watch(search, () => {
@@ -387,6 +440,16 @@ watch(search, () => {
     selectedIndex.value = 0;
   }
 });
+
+watch(
+  () => settings.theme,
+  () => {
+    if (isApplyingState.value) {
+      return;
+    }
+    void updateSettings();
+  }
+);
 
 watch(totalPages, (value) => {
   if (pageIndex.value > value - 1) {
@@ -553,8 +616,23 @@ function detectMac() {
   return /mac/i.test(navigator.platform) || /mac/i.test(navigator.userAgent);
 }
 
+function updateSystemTheme(event?: MediaQueryList | MediaQueryListEvent) {
+  if (event && "matches" in event) {
+    systemPrefersDark.value = event.matches;
+    return;
+  }
+  if (prefersDarkQuery) {
+    systemPrefersDark.value = prefersDarkQuery.matches;
+  }
+}
+
 onMounted(async () => {
   isMac.value = detectMac();
+  if (typeof window !== "undefined" && "matchMedia" in window) {
+    prefersDarkQuery = window.matchMedia("(prefers-color-scheme: dark)");
+    updateSystemTheme(prefersDarkQuery);
+    prefersDarkQuery.addEventListener("change", updateSystemTheme);
+  }
   await refreshHistory();
 
   unlistenHistory.value = await listen<StoredState>("history-updated", (event) => {
@@ -590,6 +668,10 @@ onUnmounted(() => {
   window.removeEventListener("keydown", handleKeydown);
   window.removeEventListener("keyup", handleKeyup);
   window.removeEventListener("mousedown", handleDocumentClick);
+  if (prefersDarkQuery) {
+    prefersDarkQuery.removeEventListener("change", updateSystemTheme);
+    prefersDarkQuery = null;
+  }
   unlistenHistory.value?.();
   unlistenOpen.value?.();
   unlistenClose.value?.();
@@ -696,11 +778,12 @@ onUnmounted(() => {
             />
           </div>
           <div class="setting">
-            <span>Dark mode</span>
-            <label class="toggle">
-              <input type="checkbox" :checked="isDarkMode" @change="toggleTheme" />
-              <span class="toggle-slider" />
-            </label>
+            <span>Theme</span>
+            <select v-model="settings.theme" class="settings-select">
+              <option v-for="theme in themeOptions" :key="theme.value" :value="theme.value">
+                {{ theme.label }}
+              </option>
+            </select>
           </div>
         </div>
         <div class="settings-actions">
@@ -749,6 +832,14 @@ onUnmounted(() => {
           />
         </div>
       </button>
+      <div v-if="totalPages > 1" class="page-indicator page-indicator--bottom" aria-label="History pages">
+        <span
+          v-for="page in totalPages"
+          :key="page"
+          class="page-dot"
+          :class="{ active: page - 1 === pageIndex }"
+        />
+      </div>
     </section>
 
     <footer class="footer">
@@ -761,19 +852,20 @@ onUnmounted(() => {
           <span class="keycap" :class="{ pressed: activeKeys.shift }">Shift</span>
           <span class="keycap-plus">+</span>
           <span class="keycap" :class="{ pressed: activeKeys.v }">V</span>
-          <span class="keycap-plus">+</span>
-          <span class="keycap keycap--wide" :class="{ pressed: activeKeys.number }">
-            {{ numberKeyLabel }}
-          </span>
         </div>
       </div>
-      <div v-if="totalPages > 1" class="page-indicator" aria-label="History pages">
-        <span
-          v-for="page in totalPages"
-          :key="page"
-          class="page-dot"
-          :class="{ active: page - 1 === pageIndex }"
-        />
+      <div class="shortcut-block">
+        <div class="keycaps">
+          <span class="keycap" :class="{ pressed: activeKeys.meta }">
+            {{ primaryModifier }}
+          </span>
+          <span class="keycap-plus">+</span>
+          <span class="keycap" :class="{ pressed: activeKeys.shift }">Shift</span>
+          <span class="keycap-plus">+</span>
+          <span class="keycap keycap--wide" :class="{ pressed: activeKeys.backspace }">
+            Backspace
+          </span>
+        </div>
       </div>
       <div class="shortcut-block">
         <div class="keycaps">
@@ -799,7 +891,17 @@ onUnmounted(() => {
   background: rgba(88, 78, 58, 0.18);
 }
 
-.backdrop.theme-dark {
+.backdrop.theme-dark,
+.backdrop.theme-tokyonight,
+.backdrop.theme-everforest,
+.backdrop.theme-ayu,
+.backdrop.theme-catppuccin,
+.backdrop.theme-catppuccin-macchiato,
+.backdrop.theme-gruvbox,
+.backdrop.theme-kanagawa,
+.backdrop.theme-nord,
+.backdrop.theme-matrix,
+.backdrop.theme-one-dark {
   background: rgba(8, 8, 12, 0.5);
 }
 
@@ -856,6 +958,196 @@ onUnmounted(() => {
   --toggle-bg: rgba(255, 255, 255, 0.2);
   --toggle-active: rgba(249, 187, 96, 0.75);
   --toggle-thumb: #f7f3eb;
+}
+
+.app.theme-tokyonight {
+  --app-bg: rgba(26, 27, 38, 0.94);
+  --app-surface: rgba(36, 40, 59, 0.72);
+  --app-surface-strong: rgba(36, 40, 59, 0.9);
+  --app-border: rgba(65, 72, 104, 0.6);
+  --app-text: #c0caf5;
+  --app-muted: rgba(169, 177, 214, 0.65);
+  --app-muted-strong: rgba(169, 177, 214, 0.85);
+  --app-shadow: 0 30px 90px rgba(5, 8, 20, 0.6);
+  --accent: #7aa2f7;
+  --keycap-bg: linear-gradient(160deg, #d5ddf4, #98a9d6);
+  --keycap-border: rgba(132, 148, 189, 0.9);
+  --keycap-shadow: #7787b8;
+  --keycap-text: #2a2f45;
+  --toggle-bg: rgba(122, 162, 247, 0.25);
+  --toggle-active: rgba(122, 162, 247, 0.75);
+  --toggle-thumb: #e7ecfb;
+}
+
+.app.theme-everforest {
+  --app-bg: rgba(43, 51, 57, 0.94);
+  --app-surface: rgba(60, 68, 74, 0.75);
+  --app-surface-strong: rgba(60, 68, 74, 0.92);
+  --app-border: rgba(97, 111, 104, 0.6);
+  --app-text: #d3c6aa;
+  --app-muted: rgba(157, 169, 160, 0.7);
+  --app-muted-strong: rgba(157, 169, 160, 0.9);
+  --app-shadow: 0 30px 90px rgba(12, 16, 18, 0.6);
+  --accent: #a7c080;
+  --keycap-bg: linear-gradient(160deg, #e1d5bc, #a4b695);
+  --keycap-border: rgba(158, 170, 142, 0.9);
+  --keycap-shadow: #8fa17d;
+  --keycap-text: #2f352f;
+  --toggle-bg: rgba(167, 192, 128, 0.25);
+  --toggle-active: rgba(167, 192, 128, 0.75);
+  --toggle-thumb: #efe8d7;
+}
+
+.app.theme-ayu {
+  --app-bg: rgba(15, 20, 25, 0.94);
+  --app-surface: rgba(31, 36, 48, 0.8);
+  --app-surface-strong: rgba(31, 36, 48, 0.92);
+  --app-border: rgba(60, 65, 76, 0.6);
+  --app-text: #e6e1cf;
+  --app-muted: rgba(184, 179, 155, 0.7);
+  --app-muted-strong: rgba(184, 179, 155, 0.9);
+  --app-shadow: 0 30px 90px rgba(6, 10, 12, 0.65);
+  --accent: #ffb454;
+  --keycap-bg: linear-gradient(160deg, #f2e7c8, #c9b188);
+  --keycap-border: rgba(215, 190, 137, 0.9);
+  --keycap-shadow: #b09264;
+  --keycap-text: #3f3426;
+  --toggle-bg: rgba(255, 180, 84, 0.25);
+  --toggle-active: rgba(255, 180, 84, 0.8);
+  --toggle-thumb: #f7f1e2;
+}
+
+.app.theme-catppuccin {
+  --app-bg: rgba(30, 30, 46, 0.95);
+  --app-surface: rgba(42, 43, 61, 0.78);
+  --app-surface-strong: rgba(42, 43, 61, 0.92);
+  --app-border: rgba(69, 71, 90, 0.7);
+  --app-text: #cdd6f4;
+  --app-muted: rgba(166, 173, 200, 0.7);
+  --app-muted-strong: rgba(166, 173, 200, 0.9);
+  --app-shadow: 0 30px 90px rgba(10, 9, 20, 0.6);
+  --accent: #89b4fa;
+  --keycap-bg: linear-gradient(160deg, #d7deef, #9aa9d8);
+  --keycap-border: rgba(152, 169, 216, 0.9);
+  --keycap-shadow: #7f92c8;
+  --keycap-text: #2f3244;
+  --toggle-bg: rgba(137, 180, 250, 0.25);
+  --toggle-active: rgba(137, 180, 250, 0.8);
+  --toggle-thumb: #eef0fb;
+}
+
+.app.theme-catppuccin-macchiato {
+  --app-bg: rgba(36, 39, 58, 0.95);
+  --app-surface: rgba(48, 51, 71, 0.78);
+  --app-surface-strong: rgba(48, 51, 71, 0.92);
+  --app-border: rgba(73, 77, 100, 0.7);
+  --app-text: #cad3f5;
+  --app-muted: rgba(165, 173, 203, 0.7);
+  --app-muted-strong: rgba(165, 173, 203, 0.9);
+  --app-shadow: 0 30px 90px rgba(12, 12, 24, 0.6);
+  --accent: #8aadf4;
+  --keycap-bg: linear-gradient(160deg, #d7dcef, #98a7d7);
+  --keycap-border: rgba(150, 167, 215, 0.9);
+  --keycap-shadow: #8093c6;
+  --keycap-text: #30354a;
+  --toggle-bg: rgba(138, 173, 244, 0.25);
+  --toggle-active: rgba(138, 173, 244, 0.8);
+  --toggle-thumb: #eef1fb;
+}
+
+.app.theme-gruvbox {
+  --app-bg: rgba(40, 40, 40, 0.95);
+  --app-surface: rgba(60, 56, 54, 0.82);
+  --app-surface-strong: rgba(60, 56, 54, 0.94);
+  --app-border: rgba(80, 73, 69, 0.7);
+  --app-text: #ebdbb2;
+  --app-muted: rgba(168, 153, 132, 0.7);
+  --app-muted-strong: rgba(168, 153, 132, 0.9);
+  --app-shadow: 0 30px 90px rgba(14, 10, 8, 0.65);
+  --accent: #fabd2f;
+  --keycap-bg: linear-gradient(160deg, #f2e2b9, #c6a96c);
+  --keycap-border: rgba(197, 169, 108, 0.9);
+  --keycap-shadow: #a68d57;
+  --keycap-text: #3a2f1f;
+  --toggle-bg: rgba(250, 189, 47, 0.25);
+  --toggle-active: rgba(250, 189, 47, 0.8);
+  --toggle-thumb: #f8f1d5;
+}
+
+.app.theme-kanagawa {
+  --app-bg: rgba(31, 31, 40, 0.95);
+  --app-surface: rgba(42, 42, 55, 0.78);
+  --app-surface-strong: rgba(42, 42, 55, 0.92);
+  --app-border: rgba(84, 84, 109, 0.7);
+  --app-text: #dcd7ba;
+  --app-muted: rgba(161, 152, 133, 0.7);
+  --app-muted-strong: rgba(161, 152, 133, 0.9);
+  --app-shadow: 0 30px 90px rgba(10, 10, 18, 0.6);
+  --accent: #7e9cd8;
+  --keycap-bg: linear-gradient(160deg, #e2ddc6, #a0aabf);
+  --keycap-border: rgba(146, 160, 199, 0.9);
+  --keycap-shadow: #7f8fb5;
+  --keycap-text: #2f3347;
+  --toggle-bg: rgba(126, 156, 216, 0.25);
+  --toggle-active: rgba(126, 156, 216, 0.8);
+  --toggle-thumb: #eef1f9;
+}
+
+.app.theme-nord {
+  --app-bg: rgba(46, 52, 64, 0.95);
+  --app-surface: rgba(59, 66, 82, 0.8);
+  --app-surface-strong: rgba(59, 66, 82, 0.92);
+  --app-border: rgba(76, 86, 106, 0.7);
+  --app-text: #eceff4;
+  --app-muted: rgba(216, 222, 233, 0.7);
+  --app-muted-strong: rgba(216, 222, 233, 0.9);
+  --app-shadow: 0 30px 90px rgba(10, 12, 16, 0.6);
+  --accent: #88c0d0;
+  --keycap-bg: linear-gradient(160deg, #e7eef6, #b8c3d3);
+  --keycap-border: rgba(170, 187, 205, 0.9);
+  --keycap-shadow: #93a4b9;
+  --keycap-text: #2b3648;
+  --toggle-bg: rgba(136, 192, 208, 0.25);
+  --toggle-active: rgba(136, 192, 208, 0.8);
+  --toggle-thumb: #f0f4fa;
+}
+
+.app.theme-matrix {
+  --app-bg: rgba(9, 14, 11, 0.95);
+  --app-surface: rgba(18, 26, 20, 0.8);
+  --app-surface-strong: rgba(18, 26, 20, 0.92);
+  --app-border: rgba(32, 56, 42, 0.7);
+  --app-text: #b8ffcf;
+  --app-muted: rgba(111, 220, 145, 0.7);
+  --app-muted-strong: rgba(111, 220, 145, 0.9);
+  --app-shadow: 0 30px 90px rgba(2, 6, 4, 0.65);
+  --accent: #00ff7a;
+  --keycap-bg: linear-gradient(160deg, #d3ffe3, #6deaa0);
+  --keycap-border: rgba(95, 211, 146, 0.9);
+  --keycap-shadow: #4dc281;
+  --keycap-text: #0c2a17;
+  --toggle-bg: rgba(0, 255, 122, 0.25);
+  --toggle-active: rgba(0, 255, 122, 0.8);
+  --toggle-thumb: #ebfff4;
+}
+
+.app.theme-one-dark {
+  --app-bg: rgba(40, 44, 52, 0.95);
+  --app-surface: rgba(49, 54, 64, 0.8);
+  --app-surface-strong: rgba(49, 54, 64, 0.92);
+  --app-border: rgba(62, 68, 81, 0.7);
+  --app-text: #abb2bf;
+  --app-muted: rgba(171, 178, 191, 0.65);
+  --app-muted-strong: rgba(171, 178, 191, 0.85);
+  --app-shadow: 0 30px 90px rgba(12, 14, 18, 0.6);
+  --accent: #61afef;
+  --keycap-bg: linear-gradient(160deg, #d0d5dd, #94a2b3);
+  --keycap-border: rgba(148, 162, 179, 0.9);
+  --keycap-shadow: #7f8da0;
+  --keycap-text: #2b313c;
+  --toggle-bg: rgba(97, 175, 239, 0.25);
+  --toggle-active: rgba(97, 175, 239, 0.8);
+  --toggle-thumb: #e7edf6;
 }
 
 .header {
@@ -1008,8 +1300,13 @@ onUnmounted(() => {
   display: grid;
   grid-template-rows: repeat(5, var(--history-item-height));
   gap: var(--history-gap);
-  overflow: hidden;
   align-content: start;
+  width: calc(100% + 36px);
+  margin: 0 -18px;
+  padding: 0 0 18px;
+  overflow: visible;
+  box-sizing: border-box;
+  position: relative;
 }
 
 .history-item {
@@ -1122,7 +1419,14 @@ onUnmounted(() => {
   align-items: center;
   gap: 6px;
   padding: 4px 0;
-  flex: 1;
+}
+
+.page-indicator--bottom {
+  position: absolute;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  pointer-events: none;
 }
 
 .page-dot {
@@ -1178,7 +1482,7 @@ onUnmounted(() => {
   justify-content: space-between;
   align-items: center;
   gap: 16px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   padding-top: 8px;
   border-top: 1px solid var(--app-border);
 }
@@ -1194,7 +1498,7 @@ onUnmounted(() => {
   justify-content: flex-start;
   align-items: center;
   gap: 6px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
 }
 
 .keycap {
@@ -1250,6 +1554,21 @@ onUnmounted(() => {
   padding: 6px 8px;
   background: var(--app-surface);
   color: var(--app-text);
+}
+
+.settings-select {
+  min-width: 160px;
+  border-radius: 10px;
+  border: 1px solid var(--app-border);
+  padding: 6px 8px;
+  background: var(--app-surface);
+  color: var(--app-text);
+  font-size: 12px;
+}
+
+.settings-select:focus {
+  outline: none;
+  border-color: var(--accent);
 }
 
 .toggle {

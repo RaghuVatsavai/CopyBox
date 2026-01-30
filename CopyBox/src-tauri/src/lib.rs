@@ -164,6 +164,10 @@ fn update_settings(
 
 #[tauri::command]
 fn clear_history(app: AppHandle, state: State<'_, AppState>) -> Result<StoredState, String> {
+    let current_hash = Clipboard::new()
+        .ok()
+        .and_then(|mut clipboard| read_clipboard_hash(&mut clipboard).ok().flatten());
+
     let payload = {
         let mut history = state.history.lock().map_err(|_| "history lock poisoned")?;
         for item in &history.data.items {
@@ -172,8 +176,8 @@ fn clear_history(app: AppHandle, state: State<'_, AppState>) -> Result<StoredSta
             }
         }
         history.data.items.clear();
-        history.last_seen_hash = None;
-        history.skip_next_hash = None;
+        history.last_seen_hash = current_hash.clone();
+        history.skip_next_hash = current_hash;
         persist_state(&app, &history.data);
         history.data.clone()
     };
@@ -445,6 +449,40 @@ fn read_clipboard_item(
     }
 }
 
+fn read_clipboard_hash(clipboard: &mut Clipboard) -> Result<Option<String>, ClipboardError> {
+    match clipboard.get_text() {
+        Ok(text) => {
+            let trimmed = text.trim().to_string();
+            if trimmed.is_empty() {
+                return Ok(None);
+            }
+            if looks_like_url(&trimmed) {
+                return Ok(Some(hash_text(&trimmed)));
+            }
+            if let Some(paths) = parse_file_paths(&trimmed) {
+                return Ok(Some(hash_text(&paths.join("\n"))));
+            }
+            return Ok(Some(hash_text(&trimmed)));
+        }
+        Err(error) => {
+            if !matches!(error, ClipboardError::ContentNotAvailable) {
+                return Err(error);
+            }
+        }
+    }
+
+    match clipboard.get_image() {
+        Ok(image) => Ok(Some(hash_bytes(image.bytes.as_ref()))),
+        Err(error) => {
+            if matches!(error, ClipboardError::ContentNotAvailable) {
+                Ok(None)
+            } else {
+                Err(error)
+            }
+        }
+    }
+}
+
 fn build_text_item(text: String) -> ClipboardItem {
     let content = if looks_like_url(&text) {
         ClipboardContent::Link { url: text.clone() }
@@ -598,8 +636,25 @@ fn mark_capture_error(data: &mut StoredState, error: String) -> bool {
 }
 
 fn normalize_theme(value: &str) -> String {
-    if value.eq_ignore_ascii_case("dark") {
-        "dark".to_string()
+    let normalized = value.trim().to_lowercase();
+    let allowed = [
+        "system",
+        "light",
+        "dark",
+        "tokyonight",
+        "everforest",
+        "ayu",
+        "catppuccin",
+        "catppuccin-macchiato",
+        "gruvbox",
+        "kanagawa",
+        "nord",
+        "matrix",
+        "one-dark",
+    ];
+
+    if allowed.iter().any(|theme| *theme == normalized) {
+        normalized
     } else {
         "light".to_string()
     }

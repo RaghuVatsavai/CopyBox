@@ -149,14 +149,23 @@ const statusMessage = computed(() => {
 });
 
 const isApplyingState = ref(false);
+const hasThemeOverride = ref(false);
 
 function applyState(payload: StoredState) {
   isApplyingState.value = true;
+  const currentTheme = settings.theme;
   items.value = payload.items;
   Object.assign(settings, payload.settings);
   Object.assign(status, payload.status ?? {});
+  if (hasThemeOverride.value && settings.theme !== currentTheme) {
+    settings.theme = currentTheme;
+  }
+  const themeNeedsSync = hasThemeOverride.value && payload.settings.theme !== currentTheme;
   Promise.resolve().then(() => {
     isApplyingState.value = false;
+    if (themeNeedsSync) {
+      void updateSettings();
+    }
   });
 }
 
@@ -447,6 +456,7 @@ watch(
     if (isApplyingState.value) {
       return;
     }
+    hasThemeOverride.value = true;
     void updateSettings();
   }
 );
@@ -853,6 +863,7 @@ onUnmounted(() => {
           <span class="keycap-plus">+</span>
           <span class="keycap" :class="{ pressed: activeKeys.v }">V</span>
         </div>
+        <span class="shortcut-label">Show history</span>
       </div>
       <div class="shortcut-block">
         <div class="keycaps">
@@ -866,6 +877,7 @@ onUnmounted(() => {
             Backspace
           </span>
         </div>
+        <span class="shortcut-label">Clear history</span>
       </div>
       <div class="shortcut-block">
         <div class="keycaps">
@@ -875,6 +887,7 @@ onUnmounted(() => {
           <span class="keycap" :class="{ pressed: activeKeys.right }">→</span>
           <span class="keycap keycap--wide" :class="{ pressed: activeKeys.enter }">Enter</span>
         </div>
+        <span class="shortcut-label">Navigate & select</span>
       </div>
     </footer>
   </div>
@@ -888,7 +901,7 @@ onUnmounted(() => {
 }
 
 .backdrop.theme-light {
-  background: rgba(88, 78, 58, 0.18);
+  background: transparent;
 }
 
 .backdrop.theme-dark,
@@ -902,7 +915,7 @@ onUnmounted(() => {
 .backdrop.theme-nord,
 .backdrop.theme-matrix,
 .backdrop.theme-one-dark {
-  background: rgba(8, 8, 12, 0.5);
+  background: transparent;
 }
 
 .app {
@@ -1297,12 +1310,13 @@ onUnmounted(() => {
 
 .history {
   flex: 1;
+  min-height: 0;
   display: grid;
   grid-template-rows: repeat(5, var(--history-item-height));
   gap: var(--history-gap);
   align-content: start;
-  width: calc(100% + 36px);
-  margin: 0 -18px;
+  width: calc(100% + 20px);
+  margin: 0 -10px;
   padding: 0 0 18px;
   overflow: visible;
   box-sizing: border-box;
@@ -1483,19 +1497,29 @@ onUnmounted(() => {
   align-items: center;
   gap: 16px;
   flex-wrap: nowrap;
-  padding-top: 8px;
+  padding: 14px 0 8px;
   border-top: 1px solid var(--app-border);
 }
 
 .shortcut-block {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  align-items: center;
+  text-align: center;
+  gap: 12px;
+}
+
+.shortcut-label {
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--app-muted);
+  line-height: 1.2;
 }
 
 .keycaps {
   display: flex;
-  justify-content: flex-start;
+  justify-content: center;
   align-items: center;
   gap: 6px;
   flex-wrap: nowrap;

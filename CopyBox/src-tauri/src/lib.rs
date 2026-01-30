@@ -284,6 +284,11 @@ fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
         tray_builder = tray_builder.icon(icon);
     }
 
+    #[cfg(target_os = "macos")]
+    {
+        tray_builder = tray_builder.icon_as_template(true);
+    }
+
     tray_builder.build(app)?;
 
     Ok(())

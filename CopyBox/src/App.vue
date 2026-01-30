@@ -157,6 +157,9 @@ function applyState(payload: StoredState) {
   items.value = payload.items;
   Object.assign(settings, payload.settings);
   Object.assign(status, payload.status ?? {});
+  if (!hasThemeOverride.value && settings.theme !== "light") {
+    hasThemeOverride.value = true;
+  }
   if (hasThemeOverride.value && settings.theme !== currentTheme) {
     settings.theme = currentTheme;
   }
@@ -262,6 +265,11 @@ function handleDocumentClick(event: MouseEvent) {
     return;
   }
   isSettingsOpen.value = false;
+}
+
+function handleThemeChange() {
+  hasThemeOverride.value = true;
+  void updateSettings();
 }
 
 function moveSelection(delta: number) {
@@ -449,17 +457,6 @@ watch(search, () => {
     selectedIndex.value = 0;
   }
 });
-
-watch(
-  () => settings.theme,
-  () => {
-    if (isApplyingState.value) {
-      return;
-    }
-    hasThemeOverride.value = true;
-    void updateSettings();
-  }
-);
 
 watch(totalPages, (value) => {
   if (pageIndex.value > value - 1) {
@@ -789,7 +786,7 @@ onUnmounted(() => {
           </div>
           <div class="setting">
             <span>Theme</span>
-            <select v-model="settings.theme" class="settings-select">
+            <select v-model="settings.theme" class="settings-select" @change="handleThemeChange">
               <option v-for="theme in themeOptions" :key="theme.value" :value="theme.value">
                 {{ theme.label }}
               </option>
@@ -1497,7 +1494,7 @@ onUnmounted(() => {
   align-items: center;
   gap: 16px;
   flex-wrap: nowrap;
-  padding: 14px 0 8px;
+  padding: 12px 0 6px;
   border-top: 1px solid var(--app-border);
 }
 
@@ -1506,7 +1503,7 @@ onUnmounted(() => {
   flex-direction: column;
   align-items: center;
   text-align: center;
-  gap: 12px;
+  gap: 16px;
 }
 
 .shortcut-label {
